@@ -16,10 +16,6 @@ namespace titan_api.DataAccess.AppContext
         protected override void OnModelCreating(ModelBuilder modelBuilder)
         {
             base.OnModelCreating(modelBuilder);
-            //modelBuilder.Entity<Person>().HasData(
-            //    new Person() { Id = 1, Name = "John Smith" },
-            //    new Person() { Id = 2, Name = "Alice Taylor" }
-            //);
         }
         public DbSet<Person>? Persons { get; set; }
     }
