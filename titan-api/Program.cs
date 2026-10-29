@@ -1,6 +1,14 @@
+using Microsoft.EntityFrameworkCore;
 using Microsoft.OpenApi;
+using titan_api.DataAccess.AppContext;
 
 var builder = WebApplication.CreateBuilder(args);
+
+builder.Services.AddDbContext<AppDbContext>(opt =>
+{
+    opt.UseSqlServer(builder.Configuration.GetConnectionString("DbConn"));
+});
+
 builder.Services.AddEndpointsApiExplorer();
 builder.Services.AddSwaggerGen(options =>
 {
