@@ -3,6 +3,7 @@ name: Deploy to Azure App Service
 # Git Flow:
 #   develop -> staging slot/app
 #   main    -> production app
+
 on:
   push:
     branches:
@@ -12,14 +13,20 @@ on:
 
 env:
   DOTNET_VERSION: '10.0.x'
+  EF_TOOLS_VERSION: '10.0.0'
   PROJECT_PATH: 'titan-api/titan-api.csproj'
 
 jobs:
   build:
     name: Build & Publish
     runs-on: ubuntu-latest
+
+    outputs:
+      migrations_created: ${{ steps.migrations.outputs.created }}
+
     steps:
-      - uses: actions/checkout@v4
+      - name: Checkout repository
+        uses: actions/checkout@v4
 
       - name: Setup .NET
         uses: actions/setup-dotnet@v4
@@ -32,68 +39,105 @@ jobs:
       - name: Build
         run: dotnet build ${{ env.PROJECT_PATH }} --configuration Release --no-restore
 
-      #- name: Test
-      #  run: dotnet test --configuration Release --no-build --verbosity normal
-      #  continue-on-error: false
+      # - name: Test
+      #   run: dotnet test --configuration Release --no-build --verbosity normal
 
       - name: Publish
-        run: dotnet publish ${{ env.PROJECT_PATH }} --configuration Release --no-build --output ${{ github.workspace }}/publish
+        run: |
+          dotnet publish ${{ env.PROJECT_PATH }} \
+            --configuration Release \
+            --no-build \
+            --output ${{ github.workspace }}/publish
 
       - name: Install EF Core tools
-        run: dotnet tool install --global dotnet-ef
+        run: |
+          dotnet tool install --global dotnet-ef \
+            --version ${{ env.EF_TOOLS_VERSION }}
+
+      - name: Add dotnet tools to PATH
+        run: echo "$HOME/.dotnet/tools" >> "$GITHUB_PATH"
 
       - name: Create EF Core migration bundle
+        id: migrations
+        shell: bash
         run: |
-          if dotnet ef migrations list --project ${{ env.PROJECT_PATH }} --no-build >/dev/null 2>&1; then
+          mkdir -p "${{ github.workspace }}/migrate"
+
+          if dotnet ef migrations list \
+            --project "${{ env.PROJECT_PATH }}" \
+            --no-build \
+            --configuration Release >/dev/null 2>&1; then
+
+            echo "EF Core migrations found. Creating migration bundle..."
+
             dotnet ef migrations bundle \
-              --project ${{ env.PROJECT_PATH }} \
+              --project "${{ env.PROJECT_PATH }}" \
               --configuration Release \
               --self-contained \
               --target-runtime linux-x64 \
-              --output ${{ github.workspace }}/migrate
+              --output "${{ github.workspace }}/migrate/efbundle"
+
+            echo "created=true" >> "$GITHUB_OUTPUT"
+
+            echo "Migration bundle created successfully."
+
           else
             echo "No EF Core DbContext/migrations found - skipping bundle."
+            echo "created=false" >> "$GITHUB_OUTPUT"
           fi
 
-      - name: Upload app artifact
+      - name: Upload application artifact
         uses: actions/upload-artifact@v4
         with:
           name: app
           path: ${{ github.workspace }}/publish
+          if-no-files-found: error
+          retention-days: 7
 
       - name: Upload migration bundle
-        if: hashFiles('migrate') != ''
+        if: steps.migrations.outputs.created == 'true'
         uses: actions/upload-artifact@v4
         with:
           name: migrations
-          path: ${{ github.workspace }}/migrate
+          path: ${{ github.workspace }}/migrate/efbundle
+          if-no-files-found: error
+          retention-days: 7
 
   deploy:
     name: Deploy (${{ github.ref_name == 'main' && 'production' || 'staging' }})
     needs: build
     runs-on: ubuntu-latest
+
     environment:
       name: ${{ github.ref_name == 'main' && 'production' || 'staging' }}
       url: ${{ steps.deploy.outputs.webapp-url }}
+
     steps:
-      - name: Download app artifact
+      - name: Download application artifact
         uses: actions/download-artifact@v4
         with:
           name: app
           path: publish
 
       - name: Download migration bundle
+        if: needs.build.outputs.migrations_created == 'true'
         uses: actions/download-artifact@v4
-        continue-on-error: true
         with:
           name: migrations
-          path: ./migrate
+          path: migrate
 
       - name: Run database migrations
-        if: hashFiles('migrate/efbundle') != ''
+        if: needs.build.outputs.migrations_created == 'true'
+        shell: bash
         run: |
           chmod +x migrate/efbundle
-          ./migrate/efbundle --connection "$CONNECTION_STRING"
+
+          echo "Applying EF Core database migrations..."
+
+          ./migrate/efbundle \
+            --connection "$CONNECTION_STRING"
+
+          echo "Database migrations completed successfully."
         env:
           CONNECTION_STRING: ${{ secrets.DATABASE_CONNECTION_STRING }}
 
